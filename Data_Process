@@ -1,0 +1,109 @@
+def calculate_random_walk_matrix(adj_mx):
+    """返回随机游走邻接矩阵"""
+    adj_mx = sp.coo_matrix(adj_mx)
+    d = np.array(adj_mx.sum(1), dtype=float)
+    d_inv = np.power(d, -1).flatten()
+    d_inv[np.isinf(d_inv)] = 0.
+    d_mat_inv = sp.diags(d_inv)
+    random_walk_mx = d_mat_inv.dot(adj_mx).tocoo()
+    return random_walk_mx.toarray()
+def remove_cycle_edges_and_nodes(G, cycle):
+    """
+    删除环路中的边和节点。
+    """
+    cycle_edges = [(cycle[i], cycle[(i + 1) % len(cycle)]) for i in range(len(cycle))]
+    G.remove_edges_from(cycle_edges)
+    G.remove_nodes_from(cycle)
+    return G
+def add_edge_between_graphs(G2, cycles, removed_cycles):
+    """
+    在 cycles 和 G2 之间添加边，将这两个图连接起来。
+    1. 随机从 G2 中选择一个节点作为桥梁节点。
+    2. 随机从保留的环路中选择一个环路。
+    3. 在选定的环路中每隔 2 到 3 个节点与 G2 中的随机桥梁节点进行连接。
+    4. 若环路的节点数超过剩余节点数的一半，则停止继续选择环路。
+    """
+    # 1. 从 G2（保留图结构）中随机选择一个节点作为桥梁节点
+    remaining_nodes_G2 = list(G2.nodes())
+
+    # 移除已删除环路的节点
+    removed_nodes = set()
+    for cycle_index in removed_cycles:
+        removed_nodes.update(cycles[cycle_index])
+
+    remaining_nodes_G2 = [node for node in remaining_nodes_G2 if node not in removed_nodes]
+
+    if not remaining_nodes_G2:
+        print("没有可以选择的剩余节点!")
+        return G2
+
+
+
+    # 2. 从剩余的环路中随机选择一个环路 t，t 不能等于已删除的环路
+    possible_cycles = [i for i in range(len(cycles)) ]
+    random.shuffle(possible_cycles)
+    if not possible_cycles:
+        print("没有可以选择的剩余环路!")
+        return G2
+
+    total_remaining_nodes = len(remaining_nodes_G2)  # G2 中剩余的节点总数
+    half_remaining_nodes = int(total_remaining_nodes )
+
+    selected_cycle_index = []
+    selected_cycle = []
+    total_nodes_in_cycles = 0
+
+    # 选择环路直到环路中包含的节点数超过一半的剩余节点数
+    for cycle_index in possible_cycles:
+        cycle = cycles[cycle_index]
+        total_nodes_in_cycles += len(cycle)
+
+        selected_cycle_index.append(cycle_index)
+        selected_cycle.append(cycle)
+        # print(f"选择的环路 {cycle_index + 1}, 包含的节点: {cycle}")
+        if total_nodes_in_cycles > half_remaining_nodes:
+            # print("环路节点数已经超过剩余节点数的一半，停止选择环路。")
+            break
+    if selected_cycle_index is None:
+        print("没有选择合适的环路，退出!")
+        return G2
+
+    # 3. 在选定的环路中每隔 2 到 3 个节点与 G2 中的随机桥梁节点连接
+    # step = random.choice([2, 3])  # 随机选取步长，2 或 3
+    # cycle_points = selected_cycle  # 获取选定环路的节点
+    for i in range(len(selected_cycle)):
+        """
+         将选定的环路节点及其边添加到 G2 中，并为环路中的节点重新编号为 v1, v2, ...
+         """
+        # 为环路中的节点重新编号
+        cycle_points = [f'v{i + 1}_{idx + 1}' for idx in range(len(selected_cycle[i]))]  # 新的节点名称：v1_1, v1_2, ...
+        # print(f"环路 {i + 1} 的新节点编号: {cycle_points}")
+
+        selected_new_cycle_index = random.sample(cycle_points,int(0.5*len(cycle_points)))  #选取一半的点
+        for i in range(int(0.5*len(cycle_points))):
+            selected_node_G2 = random.choice(remaining_nodes_G2)#连接桥梁节点和该点
+            G2.add_edge(selected_new_cycle_index[i], selected_node_G2)
+        # 添加节点和边
+        for m in range(len(cycle_points)):
+            node_a = cycle_points[m]  # 使用新的节点名称
+            node_b = cycle_points[(m + 1) % len(cycle_points)]  # 环路边的下一个节点
+
+            # 如果节点不在 G2 中，先添加节点
+            if node_a not in G2:
+                G2.add_node(node_a)
+            if node_b not in G2:
+                G2.add_node(node_b)
+
+            # 添加边（如果没有的话）
+            if not G2.has_edge(node_a, node_b):
+                G2.add_edge(node_a, node_b)
+
+
+    return G2
+def load_data(dataset):
+       file_path =
+      data_test = np.load(file_path)
+      file_path =
+      data_train = np.load(file_path)
+       A = np.load
+      return A,  unknow_set, full_set, know_set, training_set_s, A_s
