@@ -1,0 +1,84 @@
+class TimeTransformerEncoder(nn.Module):
+    def __init__(self, input_dim, nhead, hid_dim, nlayers):
+        super(TimeTransformerEncoder, self).__init__()
+        self.position_encoder = PositionalEncoding(input_dim)
+        encoder_layers = TransformerEncoderLayer(input_dim, nhead, hid_dim, batch_first=True)  # 使用 batch_first=True
+        self.transformer_encoder = TransformerEncoder(encoder_layers, nlayers)
+        self.input_dim = input_dim
+
+    def forward(self, src):
+        # src 的形状为 [batch_size, time_steps, num_nodes, input_dim]
+        batch_size, time_steps, num_nodes, input_dim = src.shape
+
+        # 将 num_nodes 合并到 batch_size 中
+        src = src.view(batch_size * num_nodes, time_steps, input_dim)  # 合并 num_nodes 到 batch_size
+
+        # 添加位置编码
+        src = self.position_encoder(src)
+
+        # Transformer 编码器
+        output = self.transformer_encoder(src)  # [batch_size * num_nodes, time_steps, input_dim]
+
+        # 恢复形状
+        output = output.view(batch_size, num_nodes, time_steps, input_dim)  # 恢复为 [batch_size, num_nodes, time_steps, input_dim]
+
+        # 调整维度为 [batch_size, time_steps, num_nodes, input_dim]
+        output = output.permute(0, 2, 1, 3).contiguous()
+        if torch.isnan(output).any():
+            print("NaN detected in 1")
+        return output
+class PositionalEncoding(nn.Module):
+    def __init__(self, d_model, max_len=5000):
+        super(PositionalEncoding, self).__init__()
+        pe = torch.zeros(max_len, d_model)
+        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-torch.log(torch.tensor(10000.0)) / d_model))
+
+        # 填充正弦和余弦位置编码，确保索引不超过 div_term 的大小
+        pe[:, 0::2] = torch.sin(position * div_term)  # 偶数位置
+        if d_model % 2 == 1:
+            # 如果 d_model 是奇数，最后一列保留未被填充的余弦值
+            pe[:, 1::2] = torch.cos(position * div_term[:len(div_term)])
+        else:
+            pe[:, 1::2] = torch.cos(position * div_term)
+
+        pe = pe.unsqueeze(0)  # 调整为 [1, max_len, d_model]
+        self.register_buffer('pe', pe)
+
+    def forward(self, x):
+        x = x + self.pe[:, :x.size(1), :]
+        return x
+class GCN(nn.Module):
+    def __init__(self, nfeat_v, nhid, time_length, dropout):
+        super(GCN, self).__init__()
+
+        self.gc1 = GraphConvolution()
+        self.gc2 = GraphConvolution()
+        self.gc3 = GraphConvolution()
+        self.dropout = dropout
+
+    def forward(self, X, adj_v):
+class GraphConvolution(Module):
+class ThreeLayerDGCN(nn.Module):
+    def __init__(self, time_steps, hidden_dim, orders):
+        super(ThreeLayerDGCN, self).__init__()
+        self.time_steps = time_steps
+        self.hidden_dim = hidden_dim
+        self.orders = orders
+        self.gcn1 = D_GCN(in_channels=, out_channels=, orders=)
+        self.gcn2 = D_GCN(in_channels=, out_channels=, orders=,activation=)
+        self.gcn3 = D_GCN(in_channels=, out_channels=, orders=, activation=)
+class D_GCN(nn.Module):
+    def __init__(self, in_channels, out_channels, orders, activation='relu'):
+        super(D_GCN, self).__init__()
+        self.orders = orders
+        self.activation = activation
+        self.num_matrices = 2 * self.orders + 1
+        self.Theta1 = nn.Parameter(torch.FloatTensor(in_channels * self.num_matrices, out_channels))
+        self.bias = nn.Parameter(torch.FloatTensor(out_channels))
+        self.reset_parameters()
+class MultiScaleFrequencyEnhancement(nn.Module):
+    def __init__(self, time_length):
+        super(MultiScaleFrequencyEnhancement, self).__init__()
+        self.multi_scale_attention = MultiScaleAttention()
+        self.dct_channel_block = DCTChannelBlock()
