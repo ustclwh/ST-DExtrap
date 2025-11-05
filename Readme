@@ -1,0 +1,24 @@
+ST-DExtrap: Self-Supervised Decoupled Spatiotemporal Extrapolation for Traffic Emissions
+The main contributions can be summarized in three aspects:  
+1) To address the insufficiency of single-dimensional information, we design a bidirectionally dynamic-coupled joint training branch. In the forward process, it dynamically links temporal and spatial extrapolation tasks, 
+where temporal extrapolation supplements spatial-temporal information using known future points while spatial extrapolation enriches temporal dimensions with unobserved spatial samples. 
+Compared with temporal-then-spatial models, bidirectional dynamic correlation achieves cross-dimensional complementarity, overcomes the limitations of a single dimension, and enhances the ability to model complex dynamics.
+2) For the distribution shift between observed and simulated environments, we innovatively propose an inverse mask correction strategy. During the backward process, it bidirectionally calibrates masked and original data 
+to adaptively adjust invariant feature learning, effectively mitigating simulation-to-reality gaps. Compared with one-way estimation, the integration of reverse masking can improve the model's generalization ability in 
+scenarios with environmental shifts.
+﻿ 
+3) A vehicle emission dataset for Chengdu is created using GPS data from over 14,000 taxis and more than 1.4 billion data points collected from August 3 to August 30, 2014. Experimental tests of the proposed method on 
+this dataset demonstrate that it achieves the optimal performance in the extrapolation process with distribution shifts. Beyond extensive experimental validation, we provide strict theoretical proofs for the proposed 
+framework: the joint training strategy integrates invariant representations across spatiotemporal dimensions, effectively reducing the uncertainty of extrapolation modeling.
+The implementation of the three core contributions proposed in this paper is fully reflected in the provided code, with clear mapping between each contribution and the corresponding code modules. 
+The detailed implementation explanation is as follows:
+mplementation of the Bidirectionally Dynamic-Coupled Joint Training Branch 
+The bidirectionally dynamic-coupled joint training branch, designed to address single-dimensional information insufficiency, is implemented through the  Model 3  and Model 4 
+Dynamic Linkage of Temporal and Spatial Extrapolation Tasks：This forms a bidirectional dynamic link where temporal and spatial extrapolation mutually supplement each other.  
+Cross-Dimensional Complementarity and Complex Dynamics Modeling：The reshaping and dimension alignment of features. Multi-task loss constraints (Loss 3–Loss 7) force the model to optimize temporal and spatial extrapolation jointly.
+Implementation of the Inverse Mask Correction Strategy:The inverse mask correction strategy, proposed to mitigate the distribution shift between observed and simulated environments, is implemented through the 
+mask construction logic (related to `mask_all`, `know_mask2`) and bidirectional calibration in the backward process.  
+In the backward process (triggered by `total_loss.backward()`), the inverse mask correction is achieved by weighting the loss with bidirectional masks: This bidirectional calibration forces the model to adaptively adjust 
+invariant feature learning—specifically, it focuses on learning features that are robust to both observed data missingness (`mask_all`) and spatial node unobservability (`know_mask2`), 
+rather than overfitting to the distribution of simulated data.   
+﻿The Chengdu vehicle dataset will be open-sourced upon acceptance.
