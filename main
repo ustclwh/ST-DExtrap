@@ -130,7 +130,7 @@ def test_error(model1,model2,model3,model4,h, unknow_set, test_data, A_s,Missing
 
 def load_data(dataset):
     if dataset == 'chengdu':
-        folder_path = '/home/user/data2/lwh/data/'
+        folder_path = ''
         X = load_and_concatenate_data(folder_path)
         max_length = 18
         data = X
@@ -145,7 +145,7 @@ def load_data(dataset):
                 padded_data[i, j, :feature_length] = feature
                 mask[i, j, :feature_length] = 1
         X = padded_data
-        A = np.load(r"/home/user/data2/lwh/data/adj.npy")
+        A = np.load(r"/adj.npy")
     else:
         raise NotImplementedError('Please specify datasets from: chengdu')
 
@@ -169,7 +169,6 @@ def load_data(dataset):
 if __name__ == "__main__":
     batch_size = 4
     dataset = "chengdu"
-    max_iter = 4
     h = 30
     E_maxvalue = 2
     order = 2
@@ -180,15 +179,10 @@ if __name__ == "__main__":
     in_features_v = h
     hidden_features_v = 100
     out_features_v = h
-    in_features_e = 1
-    out_features_e = 1
+
     hidden_dim = 200
     dropout_rate = 0.1
-    u1=0.8
-    u2=0.7
-    u3=0.5
-    u4=1
-    u5=1
+
 
     A, X, training_set, test_set, unknow_set, full_set, know_set, training_set_s, A_s, train_mask, test_mask, zong_mask = load_data(
         dataset)
@@ -198,18 +192,16 @@ if __name__ == "__main__":
     model2 = GCN(batch_size * in_features_v * input_dim, hidden_features_v, batch_size * in_features_v * input_dim, dropout_rate)
     model3 = ThreeLayerDGCN(h*input_dim, hidden_dim, order)
     model4 = MultiScaleFrequencyEnhancement(input_dim * h)
-
     # ---------------------- 1. 模型参数导入部分 ----------------------
     # 示例：加载预训练参数（若存在则加载，否则从头训练）
     try:
-          model1.load_state_dict(torch.load(r'/home/user/data2/lwh/model1_best.pth'))
-          model2.load_state_dict(torch.load(r'/home/user/data2/lwh/model2_best.pth'))
-          model3.load_state_dict(torch.load(r'/home/user/data2/lwh/model3_best.pth'))
-          model4.load_state_dict(torch.load(r'/home/user/data2/lwh/model4_best.pth'))
+          model1.load_state_dict(torch.load(r'/model1_best.pth'))
+          model2.load_state_dict(torch.load(r'/model2_best.pth'))
+          model3.load_state_dict(torch.load(r'/model3_best.pth'))
+          model4.load_state_dict(torch.load(r'/model4_best.pth'))
           print("Successfully loaded pretrained parameters for all models.")
     except FileNotFoundError:
         print("Pretrained model parameters not found, training from scratch.")
     MAE_t, RMSE_t, MAPE_t, R2_t, pred, truth = test_error(model1,model2,model3,model4,h, unknow_set, test_set, A, False, test_mask)
     print(f" MAE: {MAE_t}, RMSE: {RMSE_t}")
 
-    # print("Training completed. Best MAE model parameters saved in:", save_dir)
