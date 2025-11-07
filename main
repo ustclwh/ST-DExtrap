@@ -1,236 +1,215 @@
-import os
-import numpy as np
-import torch
-import torch.nn as nn
-import torch.optim as optim
-from torch.utils.data import DataLoader
-import networkx as nx
+from torch.nn.parameter import Parameter
+from torch.nn.modules.module import Module
+from utils import *
+from data_process import *
+from model import *
 from itertools import chain
 
+def calculate_random_walk_matrix(adj_mx):
+    """返回随机游走邻接矩阵，用于D_GCN"""
+    adj_mx = sp.coo_matrix(adj_mx)
+    d = np.array(adj_mx.sum(1), dtype=float)
+    d_inv = np.power(d, -1).flatten()
+    d_inv[np.isinf(d_inv)] = 0.
+    d_mat_inv = sp.diags(d_inv)
+    random_walk_mx = d_mat_inv.dot(adj_mx).tocoo()
+    return random_walk_mx.toarray()
 
-def main(dataset, input_dim, nhead, hid_dim, nlayers, batch_size, in_features_v, 
-         hidden_features_v, dropout_rate, h, order, E_maxvalue, u3, u4, u5):
-    # ---------------------- 1. 数据加载与初始化 ----------------------
+
+class GraphConvolution(Module):
+    def __init__(self, in_features_v, out_features_v, bias=True):
+        super(GraphConvolution, self).__init__()
+        self.in_features_v = in_features_v
+        self.out_features_v = out_features_v
+
+        # 定义权重参数
+        self.weight = Parameter(torch.FloatTensor(in_features_v, out_features_v))
+        self.p = Parameter(torch.FloatTensor(1, in_features_v))  # 用于邻接矩阵更新的节点特征交互
+        if bias:
+            self.bias = Parameter(torch.FloatTensor(out_features_v))
+        else:
+            self.register_parameter('bias', None)
+
+        self.reset_parameters()
+
+    def reset_parameters(self):
+        stdv = 1. / math.sqrt(self.weight.size(1))
+        self.weight.data.uniform_(-stdv, stdv)
+        if self.bias is not None:
+            self.bias.data.uniform_(-stdv, stdv)
+
+    def forward(self, H_v, adj_v):
+        interaction_effect = H_v @ self.p.t()
+        interaction_matrix = interaction_effect @ interaction_effect.t()
+        updated_adj_v = adj_v + interaction_matrix
+        updated_adj_v = torch.clamp(updated_adj_v, 0, 1)
+
+        output = torch.mm(updated_adj_v, torch.mm(H_v, self.weight))
+        if self.bias is not None:
+            output += self.bias
+        return output, updated_adj_v
+
+class GCN(nn.Module):
+    def __init__(self, nfeat_v, nhid, time_length, dropout):
+        super(GCN, self).__init__()
+
+        self.gc1 = GraphConvolution(nfeat_v, nhid)
+        self.gc2 = GraphConvolution(nhid, nhid)
+        self.gc3 = GraphConvolution(nhid, time_length)
+        self.dropout = dropout
+
+    def forward(self, X, adj_v):
+        X, adj1 = self.gc1(X, adj_v)
+        X = F.relu(X)
+        X = F.dropout(X, self.dropout, training=self.training)
+
+        X, adj2 = self.gc2(X, adj1)
+        X = F.softmax(X)
+        X = F.dropout(X, self.dropout, training=self.training)
+
+        X, adj3 = self.gc3(X, adj2)
+        return X, adj3
+
+def test_error(model1,model2,model3,model4,h, unknow_set, test_data, A_s,Missing0,test_mask):
+    """
+    :unknow_set: The unknow locations for spatial prediction
+    :test_data: The true value test_data of shape (test_num_timesteps, num_nodes)  保留着消失站点的数据
+    :A_s: The full adjacent matrix
+    :Missing0: True: 0 in original datasets means missing data
+    :return: NAE, MAPE and RMSE
+    """
+    unknow_set = set(unknow_set)
+    time_dim=4*h
+    space_dim=test_data.shape[1]
+    test_omask = np.ones(test_data.shape)
+    if Missing0 == True:
+        test_omask[test_data == 0] = 0
+    test_inputs = (test_data * test_omask).astype('float32')
+    test_inputs_s = test_inputs/E_maxvalue
+
+    missing_index = np.ones(np.shape(test_data))
+
+    missing_index[:, list(unknow_set)] = 0
+    missing_index_s = missing_index
+
+    o = np.zeros([test_data.shape[0] // time_dim * time_dim, test_inputs_s.shape[1],18])
+
+    for i in range(0, test_data.shape[0]//time_dim*time_dim, time_dim):
+        inputs = test_inputs_s[i:i+time_dim, :]
+        missing_inputs = missing_index_s[i:i+time_dim, :]
+        mask_all2=test_mask[i:i+time_dim, :]
+        T_inputs = inputs*missing_inputs*mask_all2
+        T_inputs = np.expand_dims(T_inputs, axis = 0)
+        T_inputs = torch.from_numpy(T_inputs.astype('float32'))
+        A_q = torch.from_numpy((calculate_random_walk_matrix(A_s).T).astype('float32'))
+        A_h = torch.from_numpy((calculate_random_walk_matrix(A_s.T).T).astype('float32'))
+        mask_2 = np.expand_dims(missing_inputs, axis = 0)
+        mask_2=torch.from_numpy(mask_2.astype('float32'))
+        imputation1=model1(T_inputs)
+        imputation1 = imputation1.permute(2, 0, 1, 3).reshape(space_dim, -1)
+        imputation2,A_s2=model2(imputation1, torch.from_numpy(A_s.astype('float32')))
+        imputation2=imputation2.reshape(4,h*input_dim,-1)
+        imputation3=model3(imputation2,A_q,A_h).reshape(time_dim,-1,space_dim).permute(0,2,1)
+        imputation3 = imputation3.data.numpy()
+        o[i:i+time_dim, :,:] = imputation3[0, :, :]
+
+    o = o*E_maxvalue
+    truth = test_inputs_s[0:test_data.shape[0] // time_dim * time_dim]*E_maxvalue
+    test_mask2 =  (missing_index_s[0:test_data.shape[0]//time_dim*time_dim]==0 )|( test_mask[0:test_data.shape[0]//time_dim*time_dim]==0)
+
+    if Missing0 == True:
+        test_mask2[truth == 0] = 0
+        o[truth == 0] = 0
+
+    MAE = np.sum(np.abs(o - truth))/np.sum( test_mask2)
+    RMSE = np.sqrt(np.sum((o - truth)*(o - truth))/np.sum( test_mask2) )
+    MAPE = np.sum(np.abs(o - truth)/(truth + 1e-5))/np.sum( test_mask2)
+    R2 = 1 - np.sum((o - truth) * (o- truth)) / np.sum((truth - truth.mean()) * (truth - truth.mean()))
+
+    return MAE, RMSE, MAPE, R2,o, truth
+
+def load_data(dataset):
+    if dataset == 'chengdu':
+        folder_path = '/home/user/data2/lwh/data/'
+        X = load_and_concatenate_data(folder_path)
+        max_length = 18
+        data = X
+
+        padded_data = np.zeros((data.shape[0], data.shape[1], max_length))
+        mask = np.zeros((data.shape[0], data.shape[1], max_length))
+
+        for i in range(data.shape[0]):
+            for j in range(data.shape[1]):
+                feature = data[i, j]
+                feature_length = len(feature)
+                padded_data[i, j, :feature_length] = feature
+                mask[i, j, :feature_length] = 1
+        X = padded_data
+        A = np.load(r"/home/user/data2/lwh/data/adj.npy")
+    else:
+        raise NotImplementedError('Please specify datasets from: chengdu')
+
+    split_line1 = int(0.7 * X.shape[0])
+    training_set = X[:split_line1, :]
+    test_set = X[split_line1:, :]
+
+    rand = np.random.RandomState(0)
+    unknow_set = rand.choice(list(range(0, X.shape[1])), 451, replace=False)
+    unknow_set = set(unknow_set)
+    full_set = set(range(0, X.shape[1]))
+    know_set = full_set - unknow_set
+
+    training_set_s = training_set[:, list(know_set)]
+    training_set_s[training_set_s.shape[0]-1:, :] = 0
+    train_mask = mask[:split_line1, :][:, list(know_set)]
+    test_mask = mask[split_line1:, :]
+    A_s = A[:, list(know_set)][list(know_set), :]
+    return A, X, training_set, test_set, unknow_set, full_set, know_set, training_set_s, A_s, train_mask, test_mask, mask
+
+if __name__ == "__main__":
+    batch_size = 4
+    dataset = "chengdu"
+    max_iter = 4
+    h = 30
+    E_maxvalue = 2
+    order = 2
+    input_dim = 18
+    nhead = 2
+    hid_dim = 32
+    nlayers = 2
+    in_features_v = h
+    hidden_features_v = 100
+    out_features_v = h
+    in_features_e = 1
+    out_features_e = 1
+    hidden_dim = 200
+    dropout_rate = 0.1
+    u1=0.8
+    u2=0.7
+    u3=0.5
+    u4=1
+    u5=1
+
     A, X, training_set, test_set, unknow_set, full_set, know_set, training_set_s, A_s, train_mask, test_mask, zong_mask = load_data(
         dataset)
 
-    # 模型初始化（4个模型串联，优化器联合更新）
+    # 模型初始化
     model1 = TimeTransformerEncoder(input_dim, nhead, hid_dim, nlayers)
-    model2 = GCN(batch_size * in_features_v * input_dim, hidden_features_v, 
-                 batch_size * in_features_v * input_dim, dropout_rate)
-    model3 = ThreeLayerDGCN(h * input_dim, hidden_dim=hid_dim, order=order)  # 
+    model2 = GCN(batch_size * in_features_v * input_dim, hidden_features_v, batch_size * in_features_v * input_dim, dropout_rate)
+    model3 = ThreeLayerDGCN(h*input_dim, hidden_dim, order)
     model4 = MultiScaleFrequencyEnhancement(input_dim * h)
 
-    # 图结构预处理：移除自环、提取环结构
-    np.fill_diagonal(A_s, 0)  # 移除邻接矩阵自环
-    G = nx.from_numpy_array(A_s)  # 从邻接矩阵构建图
-    cycles = list(nx.cycle_basis(G))  # 提取图中的所有环
-    rand = np.random.default_rng(seed=42)  # 固定随机种子，保证可复现
+    # ---------------------- 1. 模型参数导入部分 ----------------------
+    # 示例：加载预训练参数（若存在则加载，否则从头训练）
+    try:
+          model1.load_state_dict(torch.load(r'/home/user/data2/lwh/model1_best.pth'))
+          model2.load_state_dict(torch.load(r'/home/user/data2/lwh/model2_best.pth'))
+          model3.load_state_dict(torch.load(r'/home/user/data2/lwh/model3_best.pth'))
+          model4.load_state_dict(torch.load(r'/home/user/data2/lwh/model4_best.pth'))
+          print("Successfully loaded pretrained parameters for all models.")
+    except FileNotFoundError:
+        print("Pretrained model parameters not found, training from scratch.")
+    MAE_t, RMSE_t, MAPE_t, R2_t, pred, truth = test_error(model1,model2,model3,model4,h, unknow_set, test_set, A, False, test_mask)
+    print(f" MAE: {MAE_t}, RMSE: {RMSE_t}")
 
-    # 损失函数与优化器（联合优化4个模型参数）
-    criterion = nn.MSELoss()
-    optimizer = optim.Adam(
-        chain(model1.parameters(), model2.parameters(), model3.parameters(), model4.parameters()),
-        lr=0.01, weight_decay=1e-5  # 补充权重衰减，防止过拟合
-    )
-
-    # 模型保存路径（避免覆盖，添加epoch占位符）
-    model_save_path = "temp_model.pth"
-
-    # ---------------------- 2. 训练循环（核心逻辑） ----------------------
-    for epoch in range(750):  # 750轮训练
-        model1.train()
-        model2.train()
-        model3.train()
-        model4.train()
-        optimizer.zero_grad()  # 清空梯度
-
-        # ---------------------- 2.1 图结构随机扰动 ----------------------
-        t1 = len(cycles)
-        # 随机移除一半的环（模拟图结构缺失场景）
-        removed_cycles = rand.choice(list(range(t1)), int(t1 / 2), replace=False)
-        G2 = G.copy()  # 复制原始图
-
-        # 移除选中的环边和节点，再补充边连接断开的图
-        for n in removed_cycles:
-            G2 = remove_cycle_edges_and_nodes(G2, cycles[n])
-        origin_length = len(G2.nodes())  # 移除环后的节点数
-        G2 = add_edge_between_graphs(G2, cycles, removed_cycles)  # 补充边，保证图连通
-        fill_length = len(G2.nodes())  # 补充边后的节点数
-
-        # 重新构建邻接矩阵与掩码（区分已知/未知节点）
-        A_s = nx.to_numpy_array(G2, weight='weight')  # 扰动后的邻接矩阵
-        A_m = np.zeros(fill_length)  # 标记非整数节点（假设非整数为未知节点）
-        non_integer_nodes = [node for node in G2.nodes() if not isinstance(node, int)]
-        node_to_index = {node: idx for idx, node in enumerate(G2.nodes())}
-        for node in non_integer_nodes:
-            A_m[node_to_index[node]] = 1  # 非整数节点标记为1（未知）
-
-        # 构建已知/未知节点掩码
-        know_all = set(range(fill_length))
-        know_mask = set(np.nonzero(A_m)[0])  # 
-        unknow_mask = know_all - know_mask  # 
-        result_matrix1 = np.zeros(fill_length)
-        result_matrix2 = np.zeros(fill_length)
-        for idx in know_mask:
-            result_matrix1[idx] = 1  # 已知节点掩码
-        for idx in unknow_mask:
-            result_matrix2[idx] = 1  # 未知节点掩码
-
-        # ---------------------- 2.2 批量数据构建（时间序列切片+掩码） ----------------------
-        # 随机选取batch_size个时间切片起始点
-        t_random = rand.integers(low=0, high=(training_set_s.shape[0] - h), size=batch_size, dtype=int)
-        feed_batch = []  # 输入：部分时间步置零（模拟时间缺失）
-        inputs_feed = []  # 标签：完整时间序列
-        inputs_omask = []  # 原始数据零值掩码
-        mask_all = []  # 训练掩码（train_mask）
-
-        for j in range(batch_size):
-            # 时间序列切片（长度h）
-            feed_batch1 = training_set_s[t_random[j]: t_random[j] + h, :]  # 原始时间序列
-            seg_length = feed_batch1.shape[1]  # 原始节点数（未补充前）
-            mask_m = train_mask[t_random[j]: t_random[j] + h, :]  # 训练掩码
-
-            # 扩展数据维度：适配补充后的节点数（fill_length）
-            expanded_matrix = np.zeros((h, fill_length, input_dim), dtype=np.float32)  # 输入（部分置零）
-            expanded_matrix2 = np.zeros((h, fill_length, input_dim), dtype=np.float32)  # 标签（完整）
-            mask_matrix1 = np.zeros((h, fill_length, input_dim), dtype=np.float32)  # 原始零值掩码
-            mask_matrix2 = np.zeros((h, fill_length, input_dim), dtype=np.float32)  # 训练掩码
-
-            # 填充原始数据到扩展矩阵
-            expanded_matrix[:, :seg_length, :] = feed_batch1
-            expanded_matrix[h-1:, :seg_length, :] = 0  # 最后一个时间步置零（模拟时间缺失）
-            expanded_matrix2[:, :seg_length, :] = feed_batch1  # 标签保持完整
-            mask_matrix1[:, :seg_length, :] = (feed_batch1 == 0).astype(np.float32)  # 标记原始零值
-            mask_matrix2[:, :seg_length, :] = (mask_m == 0).astype(np.float32)  # 标记训练掩码零值
-
-            # 收集批量数据
-            feed_batch.append(expanded_matrix)
-            inputs_feed.append(expanded_matrix2)
-            inputs_omask.append(mask_matrix1)
-            mask_all.append(mask_matrix2)
-
-        # 转换为Tensor（适配PyTorch模型）
-        mask_all = torch.tensor(np.array(mask_all), dtype=torch.float32)
-        inputs = np.array(feed_batch)
-        inputs2 = np.array(inputs_feed)
-        know_mask2 = torch.tensor(result_matrix1, dtype=torch.float32)  # 已知节点掩码
-        unknow_mask2 = torch.tensor(result_matrix2, dtype=torch.float32)  # 未知节点掩码
-
-        # 数据归一化（除以最大值E_maxvalue，避免数值波动）
-        Mf_inputs = torch.tensor(inputs / E_maxvalue, dtype=torch.float32)
-        Mf_inputs_2 = torch.tensor(inputs2 / E_maxvalue, dtype=torch.float32)
-        num_nodes = Mf_inputs.shape[2]  # 节点数（fill_length）
-
-        # ---------------------- 2.3 保存训练前模型参数 ----------------------
-        params_before_backward = {
-            name: param.data.clone()  # 深拷贝参数，避免后续更新影响
-            for name, param in chain(model1.named_parameters(), model2.named_parameters(), 
-                                     model3.named_parameters(), model4.named_parameters())
-        }
-        # 保存参数（临时文件，用于参数回滚）
-        torch.save(params_before_backward, model_save_path)
-
-        # ---------------------- 2.4 模型前向传播 ----------------------
-        # 1. TimeTransformerEncoder：时间序列特征提取
-        output1 = model1(Mf_inputs)  # 输出：(batch_size, h, fill_length, input_dim)
-        # loss1 = criterion(output1, Mf_inputs)  # 
-
-        # 2. GCN：图卷积特征细化（需调整维度适配GCN输入）
-        output1_reshaped = output1.permute(2, 0, 1, 3).reshape(num_nodes, -1)  # 维度：(num_nodes, batch_size*h*input_dim)
-        output2, A_s2 = model2(output1_reshaped, torch.tensor(A_s, dtype=torch.float32))  # 输出：(num_nodes, batch_size*h*input_dim)
-        # loss2 = criterion(output2, output1_reshaped)  # 
-
-        # 3. ThreeLayerDGCN：动态图卷积（处理时空关联）
-        output2_reshaped = output2.reshape(batch_size, h * input_dim, -1)  # 维度：(batch_size, h*input_dim, num_nodes)
-        # 计算随机游走矩阵（动态图权重）
-        A_dynamic = A_s
-        A_q = torch.tensor((calculate_random_walk_matrix(A_dynamic).T), dtype=torch.float32)
-        A_h = torch.tensor((calculate_random_walk_matrix(A_dynamic.T).T), dtype=torch.float32)
-        output3 = model3(output2_reshaped, A_q, A_h)  # 输出：(batch_size, h*input_dim, num_nodes)
-        # 调整维度：(batch_size, h, num_nodes, input_dim)（适配后续计算）
-        output3_reshaped = output3.reshape(batch_size, h, input_dim, num_nodes).permute(0, 1, 3, 2)
-
-        # 4. MultiScaleFrequencyEnhancement：多尺度频域增强（提升特征鲁棒性）
-        x = model4.multi_scale_attention(output2_reshaped)  # 多尺度注意力
-        output5 = model4.dct_channel_block(x)  # DCT频域增强
-        # 调整维度：(batch_size, h, num_nodes, input_dim)
-        output5_reshaped = output5.reshape(batch_size, h, input_dim, num_nodes).permute(0, 1, 3, 2)
-
-        # ---------------------- 2.5 损失计算（多任务损失联合优化） ----------------------
-        # loss3：已知节点上的时空预测损失
-        know_mask_expand = know_mask2.view(1, 1, fill_length, 1)  # 扩展维度：(1,1,num_nodes,1)
-        loss3 = criterion(
-            output3_reshaped * mask_all * know_mask_expand,  # 模型预测
-            Mf_inputs_2 * mask_all * know_mask_expand       # 真实标签
-        )
-
-        # loss4：
-        # 构建更新后的输入（原始已知节点+模型预测未知节点）
-        outputs1 = torch.zeros_like(Mf_inputs)
-        outputs1[:, :, :seg_length, :] = Mf_inputs[:, :, :seg_length, :]  # 原始已知节点
-        outputs1[:, :, seg_length:, :] = output3_reshaped[:, :, seg_length:, :]  # 预测未知节点
-        outputs1_reshaped = outputs1.reshape(batch_size, h * input_dim, -1)
-        # 动态图卷积重新计算
-        output2_dynamic = model3(outputs1_reshaped, A_q, A_h)
-        output2_dynamic_reshaped = output2_dynamic.reshape(batch_size, h, input_dim, num_nodes).permute(0, 1, 3, 2)
-        # 计算一致性损失
-        loss4 = criterion(
-            output3_reshaped * mask_all * know_mask_expand,
-            output2_dynamic_reshaped * mask_all * know_mask_expand
-        )
-
-        # loss5：频域增强预测损失
-        loss5 = criterion(
-            output5_reshaped * mask_all * know_mask_expand,
-            Mf_inputs_2 * mask_all * know_mask_expand
-        )
-
-        # loss6：时空转换一致性损失（空间→时间特征一致）
-        data_s_to_t = output3_reshaped[:, :, origin_length:, :]  # 空间预测的未知节点特征
-        data_t_to_s = output5_reshaped.clone()
-        data_t_to_s[:, :-1, :, :] = 0  # 仅保留最后一个时间步（模拟时间→空间转换）
-        # 动态图卷积计算
-        output6 = model3(data_t_to_s.reshape(batch_size, h*input_dim, -1), A_q, A_h)
-        output6_reshaped = output6.reshape(batch_size, h, input_dim, num_nodes).permute(0, 1, 3, 2)
-        loss6 = criterion(output6_reshaped, data_t_to_s)
-
-        # loss7
-        y = model4.multi_scale_attention(data_s_to_t.reshape(batch_size, h*input_dim, -1))
-        output7 = model4.dct_channel_block(y)
-        output7_reshaped = output7.reshape(batch_size, h, input_dim, (fill_length - origin_length)).permute(0, 1, 3, 2)
-        loss7 = criterion(output7_reshaped, data_s_to_t)
-
-        # 总损失，多损失加权
-        total_loss = u3 * loss3 + u4 * loss4 + u5 * loss5 + loss6 + loss7
-
-        # ---------------------- 2.6 参数回滚 ----------------------
-        total_loss.backward()  # 计算梯度
-        optimizer.step()       # 更新参数
-
-        # 重新计算更新后的损失（用于判断是否回滚参数）
-        with torch.no_grad():  # 关闭梯度计算，节省资源
-            # 重新前向传播，计算更新后的损失（loss1_P-loss3_P对应原代码逻辑）
-            output1_P = model1(Mf_inputs)
-            loss1_P = criterion(output1_P, Mf_inputs)
-
-            output1_P_reshaped = output1_P.permute(2, 0, 1, 3).reshape(num_nodes, -1)
-            output2_P, A_s2_P = model2(output1_P_reshaped, torch.tensor(A_s, dtype=torch.float32))
-            loss2_P = criterion(output2_P, output1_P_reshaped)
-
-            output2_P_reshaped = output2_P.reshape(batch_size, h*input_dim, -1)
-            output3_P = model3(output2_P_reshaped, A_q, A_h)
-            output3_P_reshaped = output3_P.reshape(batch_size, h, input_dim, num_nodes).permute(0, 1, 3, 2)
-            loss3_P = criterion(
-                output3_P_reshaped * mask_all * know_mask_expand,
-                Mf_inputs_2 * mask_all * know_mask_expand
-            )
-
-            # 若更新后损失上升，回滚到更新前参数
-            loss_before =   # 更新前损失
-            loss_after =     # 更新后损失
-
-            if loss_after > loss_before + 1e-6:  # 
-                # 加载更新前参数，回滚模型
-                params_before = torch.load(model_save_path)
-                for name, param in chain(model1.named_parameters(), model2.named
+    # print("Training completed. Best MAE model parameters saved in:", save_dir)
