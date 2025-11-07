@@ -100,10 +100,40 @@ def add_edge_between_graphs(G2, cycles, removed_cycles):
 
 
     return G2
-def load_data(dataset):
-       file_path =
-      data_test = np.load(file_path)
-      file_path =
-      data_train = np.load(file_path)
-       A = np.load
-      return A,  unknow_set, full_set, know_set, training_set_s, A_s
+def load_and_concatenate_data(folder_path, start_idx=, end_idx=):
+    """
+    从指定文件夹加载多个 `.npy` 文件，并将其数据连接在一起。
+
+    参数：
+    folder_path: str
+        存放数据文件的文件夹路径。
+    start_idx: int, optional
+        数据文件名的起始编号，默认从 3 开始。
+    end_idx: int, optional
+        数据文件名的结束编号，默认到 31。
+
+    返回：
+    tuple:
+        - concatenated_data: 合并后的数据。
+        - shape: concatenated_data 的前两维度。
+    """
+    # 构建文件名列表
+    file_names = [f"data{str(i).zfill(2)}.npy" for i in range(start_idx, end_idx)]
+    # 用于存储读取的数据
+    data_list = []
+    # 读取所有文件并将数据添加到列表
+    for file_name in file_names:
+        file_path = os.path.join(folder_path, file_name)
+        if os.path.exists(file_path):
+            try:
+                data = np.load(file_path, allow_pickle=True)
+                if isinstance(data, list):
+                    data = np.array(data, dtype=object)
+                data_list.append(data)
+            except Exception as e:
+                print(f"Error loading {file_name}: {e}")
+        else:
+            print(f"File {file_name} not found, skipping...")
+    # 合并所有数据
+    concatenated_data = np.concatenate(data_list, axis=0)
+    return concatenated_data
